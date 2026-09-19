@@ -1,0 +1,51 @@
+appId: app.space
+productName: Space
+directories:
+  buildResources: build
+files:
+  - out/**
+  - package.json
+mac:
+  category: public.app-category.graphics-design
+  icon: build/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  darkModeSupport: true
+dmg:
+  title: Space ${version}
+  backgroundColor: '#f8f7f2'
+  icon: build/icon.icns
+  iconSize: 84
+  iconTextSize: 12
+  window:
+    width: 500
+    height: 400
+  background: build/dmg-background.png
+  contents:
+    - x: 165
+      y: 205
+      type: file
+    - x: 335
+      y: 205
+      type: link
+      path: /Applications
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - arm64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  maintainer: ItzVyral <msa.26@outlook.fr>
+  category: Graphics
