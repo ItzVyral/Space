@@ -2,22 +2,23 @@
 /**
  * Génère les assets de l'installeur DMG macOS — zéro dépendance, Node pur.
  *
- * Pourquoi ce script : electron-builder exige un fond PNG et une icône .icns
- * dans `buildResources`. On dessine ces assets de façon procédurale et
- * déterministe (PRNG seedée) plutôt que d'ajouter une librairie native
- * (AGENTS §7) : PNG encodé à la main (zlib + CRC32), .icns = conteneur de
- * chunks PNG (format accepté par macOS 10.7+).
- *
  * Sorties :
- *   build/dmg-background.png — feuille de cahier lignée + flèche à la main +
- *     guides pointillés vers Applications.
+ *   build/dmg-background.png — rasterisation 500×400 de build/dmg-background.svg
+ *     (feuille de cahier, cercle bleu, carré violet et flèche tracés à la main).
  *   build/icon.icns + build/icon.png — icône « esquisse Space » (dégradé
  *     accent → violet + courbe Bezier blanche).
  *
- * Centres d'icônes dessinés sur le fond — constantes liées à la clé
+ * Pourquoi un rasteriseur maison : aucune dépendance native à ajouter (AGENTS
+ * §7) pour un asset de build généré de façon déterministe. Le SVG source est la
+ * référence ; ce script implémente le sous-ensemble utilisé (rect/line/path,
+ * dégradés radial et linéaire, pattern) via un PNG encodé à la main (zlib +
+ * CRC32) et un .icns écrit comme un conteneur de chunks PNG (format accepté
+ * par macOS 10.7+).
+ *
+ * Centres d'icônes posés par electron-builder — constantes liées à la clé
  * `dmg.contents` de electron-builder.yml (ne pas désynchroniser) :
- *   app         → (165, 205)
- *   Applications → (335, 205)
+ *   app         → (167, 203)
+ *   Applications → (338, 205)
  * Les libellés « Space » / « Applications » sous les icônes sont posés par
  * electron-builder (`iconTextSize`) : aucun texte n'est dessiné sur le fond.
  */
@@ -28,35 +29,18 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'build')
+const SVG_SRC = join(OUT_DIR, 'dmg-background.svg')
 
 const BG_W = 500
 const BG_H = 400
 const BG_SCALE = 2
 
-const APP_CENTER = { x: 165, y: 205 }
-const APPLICATIONS_CENTER = { x: 335, y: 205 }
-const ARROW_FROM = 200
-const ARROW_TO = 302
-
-const SEED = 20260919
-
 const ACCENT = { r: 13, g: 153, b: 255 } // #0d99ff
 const ACCENT_2 = { r: 124, g: 58, b: 237 } // #7c3aed
-const LINE_BLUE = { r: 92, g: 112, b: 164 }
-const MARGIN_RED = { r: 208, g: 78, b: 78 }
 
-// PRNG déterministe (mulberry32) : rendu reproductible sur toutes les OS.
-function mulberry32(seed) {
-  let a = seed >>> 0
-  return () => {
-    a = (a + 0x6d2b79f5) | 0
-    let t = Math.imul(a ^ (a >>> 15), 1 | a)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
-
-// Surface RGBA avec compositing source-over.
+/* ------------------------------------------------------------------ *
+ * Surface RGBA avec compositing source-over.
+ * ------------------------------------------------------------------ */
 class Surface {
   constructor(w, h) {
     this.w = w
@@ -79,9 +63,8 @@ class Surface {
 
   compose(x, y, c) {
     const p = this.pixelAt(x, y)
-    if (!p) return
+    if (!p || c.a <= 0) return
     const sa = c.a / 255
-    if (sa <= 0) return
     const da = p[3] / 255
     const oa = sa + da * (1 - sa)
     if (oa <= 0) return
@@ -91,10 +74,10 @@ class Surface {
     p[3] = oa * 255
   }
 
-  fillRect(x0, y0, w, h, c) {
+  fillRect(x0, y0, w, h, colorOrFn) {
     for (let y = Math.max(0, y0); y < Math.min(this.h, y0 + h); y++) {
       for (let x = Math.max(0, x0); x < Math.min(this.w, x0 + w); x++) {
-        this.compose(x, y, c)
+        this.compose(x, y, typeof colorOrFn === 'function' ? colorOrFn(x, y) : colorOrFn)
       }
     }
   }
@@ -113,9 +96,39 @@ class Surface {
       }
     }
   }
+
+  fillPolygon(pts, colorOrFn) {
+    const xs = pts.map((p) => p.x)
+    const ys = pts.map((p) => p.y)
+    const minX = Math.max(0, Math.floor(Math.min(...xs) - 1))
+    const maxX = Math.min(this.w - 1, Math.ceil(Math.max(...xs) + 1))
+    const minY = Math.max(0, Math.floor(Math.min(...ys) - 1))
+    const maxY = Math.min(this.h - 1, Math.ceil(Math.max(...ys) + 1))
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (pointInPolygon(x, y, pts)) {
+          this.compose(x, y, typeof colorOrFn === 'function' ? colorOrFn(x, y) : colorOrFn)
+        }
+      }
+    }
+  }
 }
 
-// Encodage PNG (RGBA 8 bit) : CRC32 table-driven, chunks IHDR/IDAT/IEND.
+// Ray casting : (x, y) à l'intérieur du polygone ?
+function pointInPolygon(x, y, pts) {
+  let inside = false
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const a = pts[i]
+    const b = pts[j]
+    const crosses = a.y > y !== b.y > y && x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x
+    if (crosses) inside = !inside
+  }
+  return inside
+}
+
+/* ------------------------------------------------------------------ *
+ * Encodage PNG (RGBA 8 bit) : CRC32 table-driven, chunks IHDR/IDAT/IEND.
+ * ------------------------------------------------------------------ */
 const CRC_TABLE = (() => {
   const t = new Uint32Array(256)
   for (let n = 0; n < 256; n++) {
@@ -204,8 +217,79 @@ function chainDownsample(src, w, h, times) {
   return cur
 }
 
-// Traits et courbes.
-function strokePolyline(s, pts, width, c) {
+/* ------------------------------------------------------------------ *
+ * Couleurs, dégradés, traits.
+ * ------------------------------------------------------------------ */
+function hexColor(hex, opacity) {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim())
+  if (!m) throw new Error(`couleur inconnue : ${hex}`)
+  return {
+    r: parseInt(m[1].slice(0, 2), 16),
+    g: parseInt(m[1].slice(2, 4), 16),
+    b: parseInt(m[1].slice(4, 6), 16),
+    a: Math.round(255 * (opacity ?? 1))
+  }
+}
+
+function lerpColor(a, b, t) {
+  return {
+    r: a.r + (b.r - a.r) * t,
+    g: a.g + (b.g - a.g) * t,
+    b: a.b + (b.b - a.b) * t,
+    a: a.a + (b.a - a.a) * t
+  }
+}
+
+const clamp01 = (t) => Math.min(1, Math.max(0, t))
+
+// Résout fill/stroke : couleur hexadécimale ou dégradé (url(#id)).
+function resolvePaint(value, opacity, defs, bbox) {
+  if (!value || value === 'none') return null
+  const m = /^url\(#([\w.-]+)\)$/.exec(value.trim())
+  if (m) {
+    const g = defs[m[1]]
+    if (!g) throw new Error(`définition inconnue : #${m[1]}`)
+    return makeGradientFn(g, bbox, opacity)
+  }
+  return hexColor(value, opacity)
+}
+
+function makeGradientFn(g, bbox, opacity) {
+  const stops = g.stops.map((s) => ({
+    offset: Number(s.offset),
+    color: hexColor(s['stop-color'], (s.opacity ?? 1) * (opacity ?? 1))
+  }))
+  const stopAt = (t) => {
+    const ct = clamp01(t)
+    if (ct <= stops[0].offset) return stops[0].color
+    for (let i = 1; i < stops.length; i++) {
+      if (ct <= stops[i].offset) {
+        const lo = stops[i - 1]
+        const hi = stops[i]
+        return lerpColor(lo.color, hi.color, (ct - lo.offset) / (hi.offset - lo.offset || 1))
+      }
+    }
+    return stops[stops.length - 1].color
+  }
+  if (g.kind === 'linear') {
+    const to = (q, min, max) => (g.userSpace ? q : bbox[min] + q * bbox[max])
+    const p0 = { x: to(Number(g.x1), 'x', 'w'), y: to(Number(g.y1), 'y', 'h') }
+    const p1 = { x: to(Number(g.x2), 'x', 'w'), y: to(Number(g.y2), 'y', 'h') }
+    const dx = p1.x - p0.x
+    const dy = p1.y - p0.y
+    const len2 = dx * dx + dy * dy || 1
+    return (x, y) => stopAt(((x - p0.x) * dx + (y - p0.y) * dy) / len2)
+  }
+  const cx = bbox.x + Number(g.cx) * bbox.w
+  const cy = bbox.y + Number(g.cy) * bbox.h
+  const rx = Number(g.r) * (bbox.w || 1)
+  const ry = Number(g.r) * (bbox.h || 1)
+  return (x, y) => stopAt(Math.hypot((x - cx) / rx, (y - cy) / ry))
+}
+
+// Trait : sertissage de disques le long de la polyligne, arrondi aux extrémités
+// et aux joints (équivalent stroke-linecap/linejoin round). Couleur dégradée OK.
+function strokePolyline(s, pts, width, colorOrFn) {
   const r = width / 2
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1]
@@ -214,12 +298,27 @@ function strokePolyline(s, pts, width, c) {
     const steps = Math.max(1, Math.ceil(seg))
     for (let k = 0; k <= steps; k++) {
       const t = k / steps
-      s.fillDisc(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, r, c)
+      const px = a.x + (b.x - a.x) * t
+      const py = a.y + (b.y - a.y) * t
+      s.fillDisc(px, py, r, typeof colorOrFn === 'function' ? colorOrFn(px, py) : colorOrFn)
     }
   }
 }
 
-// Décalage perpendiculaire pseudo-périodique → tracé à main levée.
+function cubicBezier(p0, c1, c2, p3, n) {
+  const pts = []
+  for (let i = 0; i <= n; i++) {
+    const t = i / n
+    const mt = 1 - t
+    pts.push({
+      x: mt * mt * mt * p0.x + 3 * mt * mt * t * c1.x + 3 * mt * t * t * c2.x + t * t * t * p3.x,
+      y: mt * mt * mt * p0.y + 3 * mt * mt * t * c1.y + 3 * mt * t * t * c2.y + t * t * t * p3.y
+    })
+  }
+  return pts
+}
+
+// Décalage perpendiculaire pseudo-périodique → tracé à main levée (icône).
 function wobbly(points, amplitude, freq, phase = 0) {
   const out = []
   for (let i = 0; i < points.length; i++) {
@@ -236,161 +335,236 @@ function wobbly(points, amplitude, freq, phase = 0) {
   return out
 }
 
-function cubicBezier(p0, p1, p2, p3, n) {
-  const pts = []
-  for (let i = 0; i <= n; i++) {
-    const t = i / n
-    const mt = 1 - t
-    pts.push({
-      x: mt * mt * mt * p0.x + 3 * mt * mt * t * p1.x + 3 * mt * t * t * p2.x + t * t * t * p3.x,
-      y: mt * mt * mt * p0.y + 3 * mt * mt * t * p1.y + 3 * mt * t * t * p2.y + t * t * t * p3.y
-    })
-  }
-  return pts
+/* ------------------------------------------------------------------ *
+ * Parseur SVG minimal — sous-ensemble du fichier dmg-background.svg.
+ * ------------------------------------------------------------------ */
+function stripSvgDecorations(xml) {
+  return xml
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<metadata[\s\S]*?<\/metadata>/g, '')
+    .replace(/<\?xml[\s\S]*?\?>/g, '')
 }
 
-function circlePolyline(cx, cy, r, steps = 200) {
-  const pts = []
-  for (let i = 0; i <= steps; i++) {
-    const a = (i / steps) * Math.PI * 2
-    pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r })
-  }
-  return pts
-}
-
-// Rectangle arrondi couvert par une polyligne dense (arcs échantillonnés).
-function roundedRectPolyline(cx, cy, hw, hh, r, arcSteps = 16) {
-  const rw = Math.max(0, hw - r)
-  const rh = Math.max(0, hh - r)
-  const pts = []
-  const arc = (ccX, ccY, a0, a1) => {
-    for (let i = 0; i <= arcSteps; i++) {
-      const a = a0 + ((a1 - a0) * i) / arcSteps
-      pts.push({ x: ccX + r * Math.cos(a), y: ccY + r * Math.sin(a) })
+function parseXml(xml) {
+  const root = { tag: '#root', attrs: {}, children: [], text: '' }
+  const stack = [root]
+  const tagRe = /<(\/)?([a-zA-Z][\w.-]*)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/)?>|<\/[a-zA-Z][\w.-]*>/g
+  for (const m of xml.matchAll(tagRe)) {
+    if (m[1] || m[0].startsWith('</')) {
+      if (stack.length > 1) stack.pop()
+      continue
     }
+    const attrs = {}
+    for (const am of m[3].matchAll(/([\w.:-]+)="([^"]*)"/g)) attrs[am[1]] = am[2]
+    const node = { tag: m[2], attrs, children: [], text: '' }
+    stack[stack.length - 1].children.push(node)
+    if (!m[4]) stack.push(node)
   }
-  pts.push({ x: cx - rw, y: cy - hh })
-  pts.push({ x: cx + rw, y: cy - hh })
-  arc(cx + rw, cy - rh, -Math.PI / 2, 0)
-  pts.push({ x: cx + hw, y: cy + rh })
-  arc(cx + rw, cy + rh, 0, Math.PI / 2)
-  pts.push({ x: cx - rw, y: cy + hh })
-  arc(cx - rw, cy + rh, Math.PI / 2, Math.PI)
-  pts.push({ x: cx - hw, y: cy - rh })
-  arc(cx - rw, cy - rh, Math.PI, (3 * Math.PI) / 2)
-  return pts
+  return root
 }
 
-// Pointillés le long d'une polyligne, par avancée à longueur d'arc.
-function dashedStroke(s, pts, width, c, dash = 26, gap = 18) {
-  const out = []
-  let stretch = 0
-  let drawing = true
-  let prev = null
-  for (const p of pts) {
-    if (prev) {
-      stretch += Math.hypot(p.x - prev.x, p.y - prev.y)
-      if (drawing && stretch >= dash) {
-        drawing = false
-        stretch = 0
-      } else if (!drawing && stretch >= gap) {
-        drawing = true
-        stretch = 0
-      }
-      if (drawing) out.push(p)
-    }
-    prev = p
-  }
-  strokePolyline(s, out, width, c)
-}
+const SVG_CURVE_STEPS = 48
 
-// Fond : feuille de cahier lignée 500×400, rendue en supersampling ×2.
-function renderBackground() {
-  const w = BG_W * BG_SCALE
-  const h = BG_H * BG_SCALE
-  const s = new Surface(w, h)
-  const rand = mulberry32(SEED)
-
-  s.fillRect(0, 0, w, h, { r: 248, g: 247, b: 242, a: 255 })
-
-  const lineColor = { r: LINE_BLUE.r, g: LINE_BLUE.g, b: LINE_BLUE.b, a: 28 }
-  for (let y = 0; y < h; y += 48) s.fillRect(0, y, w, 2, lineColor)
-  s.fillRect(56 * BG_SCALE, 0, 2, h, { r: MARGIN_RED.r, g: MARGIN_RED.g, b: MARGIN_RED.b, a: 34 })
-
-  // Coin replié en haut à droite, avec le tracé du pli.
-  const fold = 30 * BG_SCALE
-  s.fillRect(w - fold, 0, fold, fold, { r: 0, g: 0, b: 0, a: 10 })
-  strokePolyline(s, [
-    { x: w - fold, y: 0 },
-    { x: w - fold, y: fold },
-    { x: w, y: 0 }
-  ], 2, { r: 0, g: 0, b: 0, a: 22 })
-
-  const ax = APP_CENTER.x * BG_SCALE
-  const ay = APP_CENTER.y * BG_SCALE
-  const bx = APPLICATIONS_CENTER.x * BG_SCALE
-  const by = APPLICATIONS_CENTER.y * BG_SCALE
-
-  // Guide app : cercle pointillé accent + second passage léger (stylo superposé).
-  const appCircle = circlePolyline(ax, ay, 50 * BG_SCALE)
-  dashedStroke(s, appCircle, 7 * BG_SCALE, { r: ACCENT.r, g: ACCENT.g, b: ACCENT.b, a: 150 }, 26 * BG_SCALE, 18 * BG_SCALE)
-  strokePolyline(s, wobbly(appCircle, 6, 5), 5 * BG_SCALE, { r: ACCENT.r, g: ACCENT.g, b: ACCENT.b, a: 60 })
-
-  // Guide Applications : rectangle arrondi pointillé violet.
-  const rr = roundedRectPolyline(bx, by, 45 * BG_SCALE, 41 * BG_SCALE, 18 * BG_SCALE)
-  dashedStroke(s, rr, 7 * BG_SCALE, { r: ACCENT_2.r, g: ACCENT_2.g, b: ACCENT_2.b, a: 130 }, 26 * BG_SCALE, 18 * BG_SCALE)
-  strokePolyline(s, wobbly(rr, 5, 4), 4 * BG_SCALE, { r: ACCENT_2.r, g: ACCENT_2.g, b: ACCENT_2.b, a: 55 })
-
-  // Flèche à la main de l'app vers Applications.
-  const p0 = { x: ARROW_FROM * BG_SCALE, y: ay }
-  const p3 = { x: ARROW_TO * BG_SCALE, y: ay }
-  const arrow = wobbly(
-    cubicBezier(p0, { x: p0.x + 20 * BG_SCALE, y: ay - 14 * BG_SCALE }, { x: p3.x - 20 * BG_SCALE, y: ay + 10 * BG_SCALE }, p3, 40),
-    2.5 * BG_SCALE,
-    3,
-    0.5
+function parsePathData(d) {
+  const tokens = (d.match(/([a-zA-Z])|(-?\d*\.?\d+(?:e[-+]?\d+)?)/gi) || []).map((t) =>
+    /^[a-zA-Z]$/.test(t) ? t : Number(t)
   )
-  strokePolyline(s, arrow, 9 * BG_SCALE, { r: ACCENT.r, g: ACCENT.g, b: ACCENT.b, a: 235 })
-  strokePolyline(s, wobbly(arrow, 7, 2, 4), 6 * BG_SCALE, { r: ACCENT.r, g: ACCENT.g, b: ACCENT.b, a: 90 })
-  strokePolyline(s, wobbly(arrow, 4, 2, 0.9), 2.5 * BG_SCALE, { r: ACCENT_2.r, g: ACCENT_2.g, b: ACCENT_2.b, a: 80 })
-
-  // Tête de flèche : deux petits traits en V tracés à la main.
-  const head = arrow[arrow.length - 1]
-  const tail = arrow[arrow.length - 3]
-  const dx = head.x - tail.x
-  const dy = head.y - tail.y
-  const len = Math.hypot(dx, dy) || 1
-  const ux = dx / len
-  const uy = dy / len
-  const hlen = 11 * BG_SCALE
-  const wing = 6 * BG_SCALE
-  const wingUp = { x: head.x - ux * hlen - uy * wing, y: head.y - uy * hlen + ux * wing }
-  const wingDown = { x: head.x - ux * hlen + uy * wing, y: head.y - uy * hlen - ux * wing }
-  strokePolyline(s, wobbly([tail, wingUp], 4, 3, 2), 9 * BG_SCALE, { r: ACCENT.r, g: ACCENT.g, b: ACCENT.b, a: 235 })
-  strokePolyline(s, wobbly([tail, wingDown], 4, 3, 0.7), 9 * BG_SCALE, { r: ACCENT.r, g: ACCENT.g, b: ACCENT.b, a: 235 })
-
-  const native = boxDownsample(s.data, s.w, s.h)
-  const out = native.data
-  const nw = native.w
-  const nh = native.h
-  for (let y = 0; y < nh; y++) {
-    for (let x = 0; x < nw; x++) {
-      const i = (y * nw + x) * 4
-      out[i] += (rand() - 0.5) * 7 // grain papier très léger
-      out[i + 1] += (rand() - 0.5) * 7
-      out[i + 2] += (rand() - 0.5) * 7
-      const d = Math.hypot(x / nw - 0.5, y / nh - 0.5) * 2
-      const f = 1 - Math.max(0, d - 0.55) * 0.09
-      out[i] *= f
-      out[i + 1] *= f
-      out[i + 2] *= f
+  const subpaths = []
+  let cur = []
+  let i = 0
+  let cmd = null
+  let cx = 0
+  let cy = 0
+  const close = () => {
+    if (cur.length) subpaths.push(cur)
+    cur = []
+  }
+  while (i < tokens.length) {
+    const t = tokens[i]
+    if (typeof t === 'string') {
+      cmd = t
+      i++
+      continue
+    }
+    if (cmd === 'M') {
+      cx = t
+      cy = tokens[i + 1]
+      i += 2
+      if (cur.length === 0) cur.push({ x: cx, y: cy })
+      else {
+        close()
+        cur.push({ x: cx, y: cy })
+      }
+    } else if (cmd === 'L') {
+      cx = t
+      cy = tokens[i + 1]
+      cur.push({ x: cx, y: cy })
+      i += 2
+    } else if (cmd === 'C') {
+      const c1 = { x: t, y: tokens[i + 1] }
+      const c2 = { x: tokens[i + 2], y: tokens[i + 3] }
+      const end = { x: tokens[i + 4], y: tokens[i + 5] }
+      cur.push(...cubicBezier({ x: cx, y: cy }, c1, c2, end, SVG_CURVE_STEPS).slice(1))
+      cx = end.x
+      cy = end.y
+      i += 6
+    } else if (cmd === 'Z') {
+      close()
+      i++
+    } else {
+      throw new Error(`commande SVG non supportée : ${cmd}`)
     }
   }
-  return { data: out, w: nw, h: nh }
+  close()
+  return subpaths
 }
 
-// Icône « esquisse Space » : dégradé accent → violet, courbe Bezier blanche
-// à la main et poignée de point d'ancrage. Rendu en supersampling ×2.
+function boundsOfPoints(pts) {
+  const xs = pts.map((p) => p.x)
+  const ys = pts.map((p) => p.y)
+  return {
+    x: Math.min(...xs),
+    y: Math.min(...ys),
+    w: Math.max(...xs) - Math.min(...xs),
+    h: Math.max(...ys) - Math.min(...ys)
+  }
+}
+
+function collectDefs(node, defs) {
+  for (const child of node.children) {
+    if (child.tag === 'defs' || child.tag === 'svg' || child.tag === 'g') {
+      collectDefs(child, defs)
+    } else if (child.tag === 'linearGradient' || child.tag === 'radialGradient') {
+      defs[child.attrs.id] = {
+        kind: child.tag === 'linearGradient' ? 'linear' : 'radial',
+        userSpace: child.attrs.gradientUnits === 'userSpaceOnUse',
+        x1: child.attrs.x1,
+        y1: child.attrs.y1,
+        x2: child.attrs.x2,
+        y2: child.attrs.y2,
+        cx: child.attrs.cx,
+        cy: child.attrs.cy,
+        r: child.attrs.r,
+        stops: child.children.filter((c) => c.tag === 'stop').map((s) => s.attrs)
+      }
+    } else if (child.tag === 'pattern') {
+      defs[child.attrs.id] = {
+        kind: 'pattern',
+        width: Number(child.attrs.width) || 500,
+        height: Number(child.attrs.height) || 24,
+        lines: child.children.filter((c) => c.tag === 'line').map((l) => l.attrs)
+      }
+    }
+  }
+}
+
+function scaleLine(s, pts) {
+  return pts.map((p) => ({ x: p.x * s.scale, y: p.y * s.scale }))
+}
+
+function renderNode(s, node, defs) {
+  if (node.tag === '#root' || node.tag === 'svg' || node.tag === 'g') {
+    for (const child of node.children) renderNode(s, child, defs)
+    return
+  }
+  if (
+    node.tag === 'defs' ||
+    node.tag === 'linearGradient' ||
+    node.tag === 'radialGradient' ||
+    node.tag === 'pattern' ||
+    node.tag === 'stop'
+  ) {
+    return
+  }
+  const a = node.attrs
+  const opacity = a.opacity != null ? Number(a.opacity) : null
+  if (node.tag === 'rect' || node.tag === 'line' || node.tag === 'path') {
+    if (node.tag === 'rect') {
+      const x = Number(a.x) || 0
+      const y = Number(a.y) || 0
+      const w = Number(a.width) || 0
+      const h = Number(a.height) || 0
+      const pattern = defsFromFill(defs, a.fill)
+      if (pattern && pattern.kind === 'pattern') {
+        renderPattern(s, { x, y, w, h }, pattern)
+        return
+      }
+      const paint = resolvePaint(a.fill, opacity, defs, { x, y, w, h })
+      if (paint === null) return
+      s.fillRect(x * s.scale, y * s.scale, w * s.scale, h * s.scale, paintFn(s, paint))
+      return
+    }
+    if (node.tag === 'line') {
+      const p0 = { x: Number(a.x1), y: Number(a.y1) }
+      const p1 = { x: Number(a.x2), y: Number(a.y2) }
+      const bb = boundsOfPoints([p0, p1])
+      const paint = resolvePaint(a.stroke, opacity, defs, bb)
+      if (paint === null) return
+      strokePolyline(s, scaleLine(s, [p0, p1]), (Number(a['stroke-width']) || 1) * s.scale, paintFn(s, paint))
+      return
+    }
+    const subpaths = parsePathData(a.d)
+    for (const pts of subpaths) {
+      const scaled = scaleLine(s, pts)
+      const bb = boundsOfPoints(pts)
+      const fillPaint = resolvePaint(a.fill, opacity, defs, bb)
+      if (fillPaint !== null) s.fillPolygon(scaled, paintFn(s, fillPaint))
+      const strokePaint = resolvePaint(a.stroke, opacity, defs, bb)
+      if (strokePaint !== null) {
+        strokePolyline(s, scaled, (Number(a['stroke-width']) || 1) * s.scale, paintFn(s, strokePaint))
+      }
+    }
+    return
+  }
+  throw new Error(`élément SVG non supporté : <${node.tag}>`)
+}
+
+function defsFromFill(defs, value) {
+  if (!value) return null
+  const m = /^url\(#([\w.-]+)\)$/.exec(value.trim())
+  return m ? defs[m[1]] ?? null : null
+}
+
+// Remplissage pattern : répète les traits du pattern en tuiles sur le rect.
+function renderPattern(s, rect, pattern) {
+  const tw = pattern.width
+  const th = pattern.height
+  for (const line of pattern.lines) {
+    const y = Number(line.y1) || 0
+    const paint = resolvePaint(line.stroke, line.opacity, {}, { x: 0, y, w: 1, h: 1 })
+    if (paint === null) continue
+    const width = (Number(line['stroke-width']) || 1) * s.scale
+    for (let oy = 0; rect.y + oy + y < rect.y + rect.h; oy += th) {
+      const p0 = { x: rect.x, y: rect.y + oy + y }
+      const p1 = { x: rect.x + rect.w, y: rect.y + oy + y }
+      strokePolyline(s, scaleLine(s, [p0, p1]), width, paint)
+    }
+  }
+}
+
+// Les dégradés sont définis en coordonnées SVG ; les rendre en coordonnées de
+// surface nécessite de diviser par l'échelle de supersampling.
+function paintFn(s, paint) {
+  if (typeof paint !== 'function') return paint
+  return (x, y) => paint(x / s.scale, y / s.scale)
+}
+
+function renderBackground() {
+  const s = new Surface(BG_W * BG_SCALE, BG_H * BG_SCALE)
+  s.scale = BG_SCALE
+  const xml = stripSvgDecorations(readFileSync(SVG_SRC, 'utf8'))
+  const tree = parseXml(xml)
+  const defs = {}
+  collectDefs(tree, defs)
+  renderNode(s, tree, defs)
+  const native = boxDownsample(s.data, s.w, s.h)
+  return { data: native.data, w: native.w, h: native.h }
+}
+
+/* ------------------------------------------------------------------ *
+ * Icône « esquisse Space » : dégradé accent → violet, courbe Bezier blanche
+ * à la main et poignée de point d'ancrage. Rendu en supersampling ×2.
+ * ------------------------------------------------------------------ */
 function renderIcon(px) {
   const w = px * 2
   const s = new Surface(w, w)
@@ -410,7 +584,6 @@ function renderIcon(px) {
       })
     }
   }
-
   const inset = 26 * 2
   const borderR = radius - inset
   for (let y = 0; y < w; y++) {
@@ -421,7 +594,6 @@ function renderIcon(px) {
       if (d > borderR - 6 && d < borderR) s.compose(x, y, { r: 255, g: 255, b: 255, a: 26 })
     }
   }
-
   const p0 = { x: 0.3 * w, y: 0.7 * w }
   const p1 = { x: 0.46 * w, y: 0.54 * w }
   const p2 = { x: 0.52 * w, y: 0.34 * w }
@@ -432,11 +604,12 @@ function renderIcon(px) {
   const handle = { x: 0.84 * w, y: 0.17 * w }
   strokePolyline(s, wobbly([p3, handle], 12, 2, 1), 0.045 * w, { r: 255, g: 255, b: 255, a: 160 })
   s.fillDisc(p3.x, p3.y, 0.032 * w, { r: 255, g: 255, b: 255, a: 240 })
-
   return chainDownsample(s.data, w, w, 1)
 }
 
-// Écriture des fichiers.
+/* ------------------------------------------------------------------ *
+ * Écriture des fichiers + auto-vérification.
+ * ------------------------------------------------------------------ */
 function writePng(file, w, h, rgba) {
   const buf = encodePng(w, h, rgba)
   writeFileSync(file, buf)
@@ -459,7 +632,6 @@ function buildIcns(sizes) {
   return Buffer.concat([head, ...chunks])
 }
 
-// Auto-vérification des sorties (signatures + dimensions).
 function checkPng(file, w, h) {
   const buf = readFileSync(file)
   const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -476,6 +648,9 @@ function checkIcns(file) {
   if (!buf.includes(Buffer.from('ic10'))) throw new Error(`${file} : chunk 1024px manquant`)
 }
 
+/* ------------------------------------------------------------------ *
+ * Génération.
+ * ------------------------------------------------------------------ */
 mkdirSync(OUT_DIR, { recursive: true })
 
 const bg = renderBackground()
@@ -503,6 +678,6 @@ writePng(join(OUT_DIR, 'icon.png'), 512, 512, icon512.data)
 checkPng(join(OUT_DIR, 'icon.png'), 512, 512)
 
 console.log(`assets DMG générés dans build/ :
-  dmg-background.png (${bg.w}x${bg.h})
+  dmg-background.png (${bg.w}x${bg.h}) — depuis dmg-background.svg
   icon.icns (16→1024px) + icon.png (512px)
 `)

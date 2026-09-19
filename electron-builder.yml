@@ -25,10 +25,10 @@ dmg:
     height: 400
   background: build/dmg-background.png
   contents:
-    - x: 165
-      y: 205
+    - x: 167
+      y: 203
       type: file
-    - x: 335
+    - x: 338
       y: 205
       type: link
       path: /Applications
