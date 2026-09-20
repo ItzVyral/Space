@@ -1,0 +1,17 @@
+*.md
+!README.md
+
+# Dépendances et builds
+node_modules/
+dist/
+dist-electron/
+out/
+release/
+
+# Sensibles / locaux
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db

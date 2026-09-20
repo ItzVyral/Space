@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 400" width="500" height="400" role="img" aria-label="Fond d'installation macOS style cahier">
+  <!-- Source : asset généré par Claude (C2PA, manifest retiré — inutile au rendu, fichier de build interne).
+       Rasterisé en build/dmg-background.png par scripts/render-dmg-assets.mjs (npm run assets:dmg). -->
+  <defs>
+    <!-- Papier -->
+    <radialGradient id="paper" cx="0.5" cy="0.45" r="0.8">
+      <stop offset="0" stop-color="#f8f6ef"/>
+      <stop offset="1" stop-color="#eeebe1"/>
+    </radialGradient>
+    <!-- Lignes du cahier -->
+    <pattern id="rules" width="500" height="24" patternUnits="userSpaceOnUse">
+      <line x1="0" y1="23" x2="500" y2="23" stroke="#d3d2e6" stroke-width="1.5" opacity="0.8"/>
+    </pattern>
+    <!-- Dégradé de la flèche -->
+    <linearGradient id="arrowGrad" gradientUnits="userSpaceOnUse" x1="225" y1="0" x2="295" y2="0">
+      <stop offset="0" stop-color="#14a0ff"/>
+      <stop offset="1" stop-color="#8a3ff0"/>
+    </linearGradient>
+    <!-- Coin plié -->
+    <linearGradient id="fold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e4e3de"/>
+      <stop offset="1" stop-color="#c9c8c2"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Feuille -->
+  <rect width="500" height="400" fill="url(#paper)"/>
+  <rect width="500" height="400" fill="url(#rules)"/>
+  <line x1="57" y1="0" x2="57" y2="400" stroke="#efb9c4" stroke-width="1.5" opacity="0.9"/>
+
+  <!-- Cercle bleu : emplacement de l'app (centre ≈ 167, 203) -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M160 154 C195 148 220 172 219 204 C218 236 194 258 165 256 C134 254 115 230 116 202 C117 174 138 154 168 153 C180 152 188 154 196 158"
+          stroke="#14a0ff" stroke-width="9"/>
+    <path d="M168 161 C196 160 212 178 211 204 C210 230 190 248 166 247"
+          stroke="#6cc6ff" stroke-width="3" opacity="0.6"/>
+  </g>
+
+  <!-- Carré violet : emplacement du dossier Applications (centre ≈ 338, 205) -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M302 165 C328 162 355 163 377 168 C385 192 384 220 380 245 C352 250 322 246 297 240 C293 214 296 190 301 166 C310 163 320 163 328 163"
+          stroke="#8a3ff0" stroke-width="9"/>
+    <path d="M309 173 C332 171 356 173 372 176 C376 197 375 221 372 238"
+          stroke="#b98aff" stroke-width="3" opacity="0.6"/>
+  </g>
+
+  <!-- Flèche dessinée à la main -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M227 208 C240 197 250 215 262 208 C272 202 280 207 291 203"
+          stroke="url(#arrowGrad)" stroke-width="9"/>
+    <path d="M274 187 C281 193 287 198 294 203 C288 208 281 213 275 220"
+          stroke="#8a3ff0" stroke-width="9"/>
+    <path d="M232 207 C243 200 251 213 262 207 C271 203 279 206 288 203"
+          stroke="#e2c8ff" stroke-width="2.5" opacity="0.7"/>
+  </g>
+
+  <!-- Coin plié en haut à droite -->
+  <path d="M468 0 L500 0 L500 32 Z" fill="#e8e6df"/>
+  <path d="M468 0 L500 32 L468 32 Z" fill="url(#fold)"/>
+  <path d="M468 0 L500 32" stroke="#bdbcb5" stroke-width="1" opacity="0.7"/>
+</svg>
